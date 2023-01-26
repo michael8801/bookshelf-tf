@@ -85,7 +85,7 @@ resource "random_id" "db_name_suffix" {
 }
 
 resource "google_sql_database_instance" "bookshelf-db-instance" {
-  name                = "petclinic-db-tf-${random_id.db_name_suffix.hex}"
+  name                = "bookshelf-db-tf-${random_id.db_name_suffix.hex}"
   database_version    = var.db-version
   region              = var.region
   depends_on          = [google_service_networking_connection.private_vpc_connection]
@@ -131,3 +131,85 @@ resource "google_storage_bucket" "bookshelf-content" {
 }
 
 
+resource "google_compute_instance_template" "bookshelf-template" {
+  name = "bookshelf-template"
+
+  tags = ["ssh", "web"]
+
+
+  machine_type   = var.machine_type
+  can_ip_forward = false # to restrict sending and receiving of packets with non-matching source or destination IPs
+
+  scheduling {
+    automatic_restart = true # the instance should be automatically restarted if it is terminated by Compute Engine
+  }
+
+  // Create a new boot disk from an image
+  disk {
+    source_image = "debian-cloud/debian-10"
+    auto_delete  = true
+    boot         = true
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.bookshelf-subnet-tf-eu-central2.self_link
+  }
+
+
+  service_account {
+    email  = data.google_service_account.bookshelf-sa.email
+    scopes = ["cloud-platform"]
+  }
+}
+
+
+resource "google_compute_instance_group_manager" "mig-bookshelf-tf" {
+  name = "mig-bookshelf-tf"
+
+  base_instance_name = "bookshelf"
+  zone               = var.zone
+
+  version {
+    instance_template = google_compute_instance_template.bookshelf-template.id
+  }
+
+  target_size = 1 # number of running instances
+
+  auto_healing_policies {
+    health_check      = google_compute_health_check.bookshelf-autohealing.id
+    initial_delay_sec = 300
+  }
+}
+
+
+resource "google_compute_autoscaler" "bookshelf" {
+
+  name   = "bookshelf-autoscaler"
+  zone   = var.zone
+  target = google_compute_instance_group_manager.mig-bookshelf-tf.id
+
+  autoscaling_policy {
+    max_replicas    = 2
+    min_replicas    = 1
+    cooldown_period = 60
+
+
+    cpu_utilization {
+      target = 0.7 # 70%
+    }
+
+  }
+}
+
+resource "google_compute_health_check" "bookshelf-autohealing" {
+  name                = "bookshelf-autohealing-health-check"
+  check_interval_sec  = 5
+  timeout_sec         = 5
+  healthy_threshold   = 2
+  unhealthy_threshold = 10 # 50 seconds
+
+  tcp_health_check {
+    # request_path = "/healthz"
+    port = "8080"
+  }
+}

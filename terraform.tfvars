@@ -10,7 +10,7 @@ name = "bookshelf"
 
 db-version = "MYSQL_5_7"
 
-machine_type = "g1-small"
+machine_type = "e2-small"
 
 password = "bookshelf"
 
