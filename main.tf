@@ -1,3 +1,4 @@
+# subnetwork
 resource "google_compute_subnetwork" "bookshelf-subnet-tf-eu-central2" {
   name          = "bookshelf-subnet-tf-eu-central2"
   ip_cidr_range = "10.37.3.0/24"
@@ -6,20 +7,22 @@ resource "google_compute_subnetwork" "bookshelf-subnet-tf-eu-central2" {
 
 }
 
+# vpc
 resource "google_compute_network" "bookshelf-vpc-tf" {
   name                    = "bookshelf-vpc-tf"
-  auto_create_subnetworks = false #When set to true, the network is created in "auto subnet mode". When set to false, the network is created in "custom subnet mode".
+  auto_create_subnetworks = false # When set to true, the network is created in "auto subnet mode". When set to false, the network is created in "custom subnet mode".
   mtu                     = 1460
 }
 
-
-resource "google_compute_router" "router-bookshelf" { # just router for our NAT
+# router for cloud nat
+resource "google_compute_router" "router-bookshelf" {
   name    = "router-bookshelf"
   region  = google_compute_subnetwork.bookshelf-subnet-tf-eu-central2.region
   network = google_compute_network.bookshelf-vpc-tf.id
 
 }
 
+# cloud nat
 resource "google_compute_router_nat" "nat" { # lets certain resources without external IP addresses create outbound connections to the internet.
   name                               = "my-router-nat"
   router                             = google_compute_router.router-bookshelf.name
@@ -30,6 +33,7 @@ resource "google_compute_router_nat" "nat" { # lets certain resources without ex
 
 }
 
+# firewall ssh rule
 resource "google_compute_firewall" "ssh-rule" {
   project       = var.project
   name          = "bookshelf-allow-ssh-tf"
@@ -47,6 +51,7 @@ resource "google_compute_firewall" "ssh-rule" {
   target_tags = ["ssh"]
 }
 
+# firewall http rule
 resource "google_compute_firewall" "http-rule" {
   project       = var.project
   name          = "bookshelf-allow-http-tf"
@@ -64,7 +69,8 @@ resource "google_compute_firewall" "http-rule" {
   target_tags = ["web"]
 }
 
-resource "google_compute_global_address" "private_ip_block" { #  a block of private IP addresses.
+# a block of private IP addresses
+resource "google_compute_global_address" "private_ip_block" {
   name          = "private-ip-block"
   purpose       = "VPC_PEERING"
   address_type  = "INTERNAL"
@@ -73,6 +79,7 @@ resource "google_compute_global_address" "private_ip_block" { #  a block of priv
   network       = google_compute_network.bookshelf-vpc-tf.self_link
 }
 
+# private connection between VPSs
 resource "google_service_networking_connection" "private_vpc_connection" { # allows our instances to communicate exclusively using Google’s internal network
   # Private services access is implemented as a VPC peering connection between your VPC network and the underlying Google Cloud VPC network where your Cloud SQL instance resides    
   network                 = google_compute_network.bookshelf-vpc-tf.self_link
@@ -84,7 +91,8 @@ resource "random_id" "db_name_suffix" {
   byte_length = 4
 }
 
-resource "google_sql_database_instance" "bookshelf-db-instance" {
+# sql instance
+/*resource "google_sql_database_instance" "bookshelf-db-instance" {
   name                = "bookshelf-db-tf-${random_id.db_name_suffix.hex}"
   database_version    = var.db-version
   region              = var.region
@@ -100,6 +108,7 @@ resource "google_sql_database_instance" "bookshelf-db-instance" {
     }
   }
 
+  # sql db
 }
 resource "google_sql_database" "bookshelf-db" {
   name      = var.name
@@ -108,16 +117,17 @@ resource "google_sql_database" "bookshelf-db" {
   collation = "utf8_general_ci"
 
 }
+
+# users for db
 resource "google_sql_user" "users" {
   name     = var.name
   instance = google_sql_database_instance.bookshelf-db-instance.name
   password = var.password
 }
 
-data "google_service_account" "bookshelf-sa" {
-  account_id = var.account_id
-}
 
+
+# bucket for app content
 resource "google_storage_bucket" "bookshelf-content" {
   name          = "bookshelf-py-content"
   location      = "EU"
@@ -129,8 +139,14 @@ resource "google_storage_bucket" "bookshelf-content" {
     enabled = true # versioning is fully enabled for this bucket.
   }
 }
+*/
 
+# service account
+data "google_service_account" "bookshelf-sa" {
+  account_id = var.account_id
+}
 
+# instance template
 resource "google_compute_instance_template" "bookshelf-template" {
   name = "bookshelf-template"
 
@@ -151,6 +167,12 @@ resource "google_compute_instance_template" "bookshelf-template" {
     boot         = true
   }
 
+  /*metadata = {
+    startup-script = <<-EOF1
+      #! /bin/bash
+    EOF1
+  }*/
+
   network_interface {
     subnetwork = google_compute_subnetwork.bookshelf-subnet-tf-eu-central2.self_link
   }
@@ -162,7 +184,7 @@ resource "google_compute_instance_template" "bookshelf-template" {
   }
 }
 
-
+# MIG
 resource "google_compute_instance_group_manager" "mig-bookshelf-tf" {
   name = "mig-bookshelf-tf"
 
@@ -181,7 +203,7 @@ resource "google_compute_instance_group_manager" "mig-bookshelf-tf" {
   }
 }
 
-
+# autoscaler for mig 
 resource "google_compute_autoscaler" "bookshelf" {
 
   name   = "bookshelf-autoscaler"
@@ -201,15 +223,58 @@ resource "google_compute_autoscaler" "bookshelf" {
   }
 }
 
+# health check
 resource "google_compute_health_check" "bookshelf-autohealing" {
   name                = "bookshelf-autohealing-health-check"
   check_interval_sec  = 5
   timeout_sec         = 5
   healthy_threshold   = 2
-  unhealthy_threshold = 10 # 50 seconds
+  unhealthy_threshold = 10
 
   tcp_health_check {
     # request_path = "/healthz"
     port = "8080"
   }
 }
+
+# reserved IP address
+resource "google_compute_global_address" "static-ip-bookshelf" {
+  name = "static-ip-bookshelf"
+}
+
+# forwarding rule
+resource "google_compute_global_forwarding_rule" "bookshelf-fr" {
+  name                  = "bookshelf-forwarding-rule"
+  ip_protocol           = "TCP"
+  load_balancing_scheme = "EXTERNAL"
+  port_range            = "80"
+  target                = google_compute_target_http_proxy.bookshelf-target-http-proxy.id
+  ip_address            = google_compute_global_address.static-ip-bookshelf.id
+}
+
+# http proxy 80, 8080
+resource "google_compute_target_http_proxy" "bookshelf-target-http-proxy" {
+  name    = "bookshelf-target-http-proxy"
+  url_map = google_compute_url_map.bookshelf-url-map.id
+}
+
+# url map
+resource "google_compute_url_map" "bookshelf-url-map" {
+  name            = "bookshelf-url-map"
+  default_service = google_compute_backend_service.bookshelf-backend-service.id
+}
+
+# backend service
+resource "google_compute_backend_service" "bookshelf-backend-service" {
+  name                  = "bookshelf-backend-service"
+  protocol              = "HTTP"
+  load_balancing_scheme = "EXTERNAL"
+  timeout_sec           = 10
+  health_checks         = [google_compute_health_check.bookshelf-autohealing.id]
+  backend {
+    group           = google_compute_instance_group_manager.mig-bookshelf-tf.instance_group
+    balancing_mode  = "UTILIZATION"
+    capacity_scaler = 1.0
+  }
+}
+
